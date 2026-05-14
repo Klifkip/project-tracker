@@ -1,6 +1,6 @@
 {
   "name": "project-tracker",
-  "module": "index.ts",
+  "module": "main.ts",
   "type": "module",
   "private": true,
   "devDependencies": {
