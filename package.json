@@ -2,6 +2,11 @@
   "name": "project-tracker",
   "module": "main.ts",
   "type": "module",
+    "scripts": {
+    "dev": "bun run --watch main.ts",
+    "start": "bun run main.ts",
+    "build": "bun build main.ts --compile --outfile server"
+  },
   "private": true,
   "devDependencies": {
     "@types/bun": "latest"
