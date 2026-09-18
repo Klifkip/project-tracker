@@ -266,6 +266,7 @@ document.getElementById("btn-add-project").onclick = async () => {
 };
 
 // --- CHAT LOGIC ---
+// --- CHAT & FILE UPLOAD LOGIC ---
 document.getElementById("btn-open").onclick = () => {
     currentNodeId = selectedNode.data.id;
     document.getElementById("chat-title").innerText = selectedNode.data.name;
@@ -282,7 +283,7 @@ async function loadChatMessages(nodeId) {
         if (data.messages) {
             data.messages.forEach(m => {
                 const msg = typeof m === 'string' ? JSON.parse(m) : m;
-                appendMessageToUI(msg.text);
+                appendMessageToUI(msg);
             });
         }
     } catch (e) { console.error("Chat load error", e); }
@@ -292,19 +293,81 @@ async function sendMsg() {
     const input = document.getElementById("chat-text");
     const text = input.value.trim();
     if (!text || !currentNodeId) return;
-    appendMessageToUI(text);
+    
+    // Optimistically render the message in the UI before network request finishes
+    appendMessageToUI({ text: text });
     input.value = "";
+    
     try {
         await fetch(`/api/chat?nodeId=${currentNodeId}`, {
-            method: "POST", headers: { "Content-Type": "application/json" },
+            method: "POST", 
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ text })
         });
     } catch (e) { showToast("Message save failed"); }
 }
 
-function appendMessageToUI(text) {
+// Handle Google Drive File Uploads
+document.getElementById("chat-file").onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file || !currentNodeId || !activeRootId) return;
+
+    showToast("Uploading to Google Drive...");
+    
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("nodeId", currentNodeId);
+    formData.append("projectId", activeRootId);
+
+    try {
+        // 1. Send file to your Hono backend
+        const res = await fetch("/api/upload", {
+            method: "POST",
+            body: formData
+        });
+        const data = await res.json();
+
+        if (data.success) {
+            // 2. Format a message containing the new Google Drive link
+            const text = `📁 **${data.fileName}**\n${data.link}`;
+            
+            // 3. Post it to the chat database
+            await fetch(`/api/chat?nodeId=${currentNodeId}`, {
+                method: "POST", 
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ text })
+            });
+
+            // 4. Reload chat to display the new file
+            document.getElementById("chat-messages").innerHTML = "";
+            loadChatMessages(currentNodeId);
+            showToast("Upload complete!");
+        } else {
+            showToast("Upload failed: " + data.error);
+        }
+    } catch (err) {
+        showToast("Upload error");
+        console.error(err);
+    }
+    
+    e.target.value = ""; // Reset file input so the same file can be uploaded again if needed
+};
+
+function appendMessageToUI(msg) {
     const div = document.createElement("div");
-    div.className = "msg"; div.innerText = text;
+    div.className = "msg";
+    
+    // Convert plain text URLs into clickable HTML links
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    let formattedText = msg.text.replace(urlRegex, function(url) {
+        return `<br><a href="${url}" target="_blank" style="color: var(--bg-blue); text-decoration: underline; font-weight: bold; word-break: break-all;">View Attachment</a>`;
+    });
+    
+    // Convert newlines to HTML breaks
+    formattedText = formattedText.replace(/\n/g, '<br>');
+    
+    div.innerHTML = formattedText;
+    
     const container = document.getElementById("chat-messages");
     container.appendChild(div);
     container.scrollTop = container.scrollHeight;
