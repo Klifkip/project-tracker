@@ -33,20 +33,27 @@ app.post('/api/projects', async (c) => {
 // --- Chat API ---
 app.get('/api/chat', async (c) => {
   const nodeId = c.req.query('nodeId')
-  if (!nodeId) return c.json({ ok: false }, 400)
+  if (!nodeId) return c.json({ ok: false, error: 'Missing nodeId' }, 400)
 
   const messages = await redis.lrange(`chat:${nodeId}`, 0, 100)
-  return c.json({ ok: true, messages: messages.reverse() })
+  
+  // FIX: Parse the Redis strings back into JSON objects before sending to frontend
+  const parsedMessages = messages.map(m => 
+    typeof m === 'string' ? JSON.parse(m) : m
+  )
+  
+  return c.json({ ok: true, messages: parsedMessages.reverse() })
 })
 
 app.post('/api/chat', async (c) => {
   const nodeId = c.req.query('nodeId')
   const body = await c.req.json()
 
-  if (!nodeId || !body.text) return c.json({ ok: false }, 400)
+  if (!nodeId || !body.text) return c.json({ ok: false, error: 'Missing nodeId or text' }, 400)
 
   const payload = JSON.stringify({
     text: body.text,
+    sender: body.sender || 'Anonymous', // FIX: Added sender identity
     timestamp: Date.now()
   })
 
