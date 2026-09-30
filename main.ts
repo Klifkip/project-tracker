@@ -2,6 +2,7 @@ import { Hono } from 'hono'
 import { serveStatic } from 'hono/bun' 
 import { Redis } from '@upstash/redis'
 import { logger } from 'hono/logger'
+import { cors } from 'hono/cors' // FIX 1: Import CORS
 
 const app = new Hono()
 
@@ -11,6 +12,7 @@ const redis = new Redis({
 })
 
 app.use(logger())
+app.use('/api/*', cors()) // FIX 1: Enable CORS to prevent 405 on OPTIONS preflight requests
 
 // Serve frontend
 app.get('/', async (c) => {
@@ -24,11 +26,14 @@ app.get('/api/projects', async (c) => {
   return c.json({ projects: projects || [] })
 })
 
-app.post('/api/projects', async (c) => {
+// FIX 2: Handle both POST and PUT methods just in case frontend uses PUT for updates
+const handleProjectSave = async (c: any) => {
   const body = await c.req.json()
   await redis.set('project-tracker:projects', body.projects)
   return c.json({ ok: true })
-})
+}
+app.post('/api/projects', handleProjectSave)
+app.put('/api/projects', handleProjectSave)
 
 // --- Chat API ---
 app.get('/api/chat', async (c) => {
@@ -37,7 +42,6 @@ app.get('/api/chat', async (c) => {
 
   const messages = await redis.lrange(`chat:${nodeId}`, 0, 100)
   
-  // FIX: Parse the Redis strings back into JSON objects before sending to frontend
   const parsedMessages = messages.map(m => 
     typeof m === 'string' ? JSON.parse(m) : m
   )
@@ -45,7 +49,8 @@ app.get('/api/chat', async (c) => {
   return c.json({ ok: true, messages: parsedMessages.reverse() })
 })
 
-app.post('/api/chat', async (c) => {
+// FIX 2: Handle both POST and PUT for chat
+const handleChatSave = async (c: any) => {
   const nodeId = c.req.query('nodeId')
   const body = await c.req.json()
 
@@ -53,13 +58,15 @@ app.post('/api/chat', async (c) => {
 
   const payload = JSON.stringify({
     text: body.text,
-    sender: body.sender || 'Anonymous', // FIX: Added sender identity
+    sender: body.sender || 'Anonymous', 
     timestamp: Date.now()
   })
 
   await redis.lpush(`chat:${nodeId}`, payload)
   return c.json({ ok: true })
-})
+}
+app.post('/api/chat', handleChatSave)
+app.put('/api/chat', handleChatSave)
 
 // --- Schedule API ---
 app.get('/api/schedule', async (c) => {
@@ -68,12 +75,14 @@ app.get('/api/schedule', async (c) => {
   return c.json({ content: data || "" });
 });
 
-app.post('/api/schedule', async (c) => {
+const handleScheduleSave = async (c: any) => {
   const projectId = c.req.query('projectId') || 'global';
   const body = await c.req.json();
   await redis.set(`schedule:${projectId}`, body.content);
   return c.json({ ok: true });
-});
+};
+app.post('/api/schedule', handleScheduleSave)
+app.put('/api/schedule', handleScheduleSave)
 
 // --- Google Drive Upload API ---
 interface GoogleDriveResponse {
@@ -111,7 +120,6 @@ async function getGoogleAccessToken(): Promise<string> {
     iat: now
   };
 
-  // Create JWT
   const headerEncoded = Bun.base64.encode(JSON.stringify(header));
   const payloadEncoded = Bun.base64.encode(JSON.stringify(payload));
   const signature = await generateSignature(
@@ -121,7 +129,6 @@ async function getGoogleAccessToken(): Promise<string> {
 
   const jwt = `${headerEncoded}.${payloadEncoded}.${signature}`;
 
-  // Exchange JWT for access token
   const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -140,7 +147,6 @@ async function getGoogleAccessToken(): Promise<string> {
 }
 
 async function generateSignature(data: string, privateKey: string): Promise<string> {
-  // Replace escaped newlines with actual newlines
   const key = privateKey.replace(/\\n/g, '\n');
   
   const keyObject = await crypto.subtle.importKey(
@@ -177,25 +183,20 @@ app.post('/api/upload', async (c) => {
       return c.json({ error: 'Missing required fields' }, 400);
     }
 
-    // Get Google Drive API token
     const accessToken = await getGoogleAccessToken();
     const driveFolderId = process.env.GOOGLE_DRIVE_FOLDER_ID!;
 
-    // Prepare file metadata
     const fileName = `${projectId}_${nodeId}_${Date.now()}_${file.name}`;
     const fileContent = await file.arrayBuffer();
 
-    // Upload to Google Drive
     const driveMetadata = {
       name: fileName,
       parents: [driveFolderId]
     };
 
-    // Create multipart request for Google Drive API
     const boundary = '===============7330845974216740156==';
     const body = new Uint8Array();
 
-    // Build multipart body
     const textPart = `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(driveMetadata)}\r\n--${boundary}\r\nContent-Type: ${file.type}\r\n\r\n`;
     const endPart = `\r\n--${boundary}--`;
 
@@ -214,7 +215,6 @@ app.post('/api/upload', async (c) => {
       offset += part.length;
     }
 
-    // Upload to Google Drive
     const uploadResponse = await fetch(
       'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
       {
@@ -235,7 +235,6 @@ app.post('/api/upload', async (c) => {
 
     const driveFile = await uploadResponse.json() as GoogleDriveResponse;
 
-    // Make file publicly readable (optional - comment out if you want private files)
     try {
       await fetch(`https://www.googleapis.com/drive/v3/files/${driveFile.id}/permissions`, {
         method: 'POST',
@@ -250,10 +249,8 @@ app.post('/api/upload', async (c) => {
       });
     } catch (e) {
       console.error('Failed to set public permissions:', e);
-      // Don't fail the upload if permissions fail
     }
 
-    // Store file metadata in Redis
     const fileMetadata: FileMetadata = {
       fileId: driveFile.id,
       fileName: driveFile.name,
@@ -293,6 +290,14 @@ app.get('/api/files/:nodeId', async (c) => {
 
   return c.json({ ok: true, files: parsedFiles.reverse() });
 });
+
+// FIX 3: API Catch-All
+// If an API route gets hit with a bad method (like an unhandled DELETE) or doesn't exist,
+// this ensures the server sends back JSON instead of falling through to serveStatic,
+// which returns HTML and crashes the frontend with the `<!DOCTYPE...` error.
+app.all('/api/*', (c) => {
+  return c.json({ ok: false, error: 'API route or method not found' }, 405)
+})
 
 // Serve static files (CSS, JS, images)
 app.use('/*', serveStatic({ root: './public' }))
